@@ -36,6 +36,8 @@ func (m *mockGlobalTunnel) SendAnomaly(anomaly AnomalyMessage) error {
 	return nil
 }
 
+// This type intentionally simulates when the globalTunnel has the IsConnected method but lacks the SendAnomaly method,
+// in which case, it should trigger an error.
 type mockGlobalTunnelLacksSendAnomaly struct{}
 
 func (m *mockGlobalTunnelLacksSendAnomaly) IsConnected() bool {
