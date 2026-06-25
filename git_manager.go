@@ -18,6 +18,7 @@ package watch
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,24 +33,116 @@ type GitManager struct {
 	RepoURL      string
 	Branch       string
 	LocalPath    string
+	GitUsername  string
+	GitToken     string
 	PollInterval time.Duration
 	watcher      *fsnotify.Watcher
 	stopChan     chan bool
 }
 
 // NewGitManager creates a new GitManager instance
-func NewGitManager(repoURL, branch, localPath string) *GitManager {
+func NewGitManager(repoURL, branch, localPath, gitUsername, gitToken string) *GitManager {
 	if branch == "" {
 		branch = "main"
 	}
 
+	cleanRepoURL, embeddedUsername, embeddedToken := normalizeRepoURL(repoURL)
+	if gitUsername == "" {
+		gitUsername = embeddedUsername
+	}
+	if gitToken == "" {
+		gitToken = embeddedToken
+	}
+	if gitUsername == "" {
+		gitUsername = "x-access-token"
+	}
+
 	return &GitManager{
-		RepoURL:      repoURL,
+		RepoURL:      cleanRepoURL,
 		Branch:       branch,
 		LocalPath:    localPath,
+		GitUsername:  gitUsername,
+		GitToken:     gitToken,
 		PollInterval: 30 * time.Second, // Check for updates every 30 seconds
 		stopChan:     make(chan bool),
 	}
+}
+
+func normalizeRepoURL(repoURL string) (string, string, string) {
+	parsedURL, err := url.Parse(repoURL)
+	if err != nil || parsedURL.Scheme == "" || parsedURL.User == nil {
+		return repoURL, "", ""
+	}
+
+	username := parsedURL.User.Username()
+	token, _ := parsedURL.User.Password()
+	parsedURL.User = nil
+
+	return parsedURL.String(), username, token
+}
+
+func gitAuthEnv(repoURL, gitUsername, gitToken string) []string {
+	if gitToken == "" {
+		return nil
+	}
+
+	parsedURL, err := url.Parse(repoURL)
+	if err != nil {
+		return nil
+	}
+
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return nil
+	}
+
+	if gitUsername == "" {
+		gitUsername = "x-access-token"
+	}
+
+	credentialHelper := fmt.Sprintf("!f() { printf 'username=%%s\\npassword=%%s\\n' %s %s; }; f",
+		shellQuote(gitUsername),
+		shellQuote(gitToken),
+	)
+
+	return []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=credential.helper",
+		fmt.Sprintf("GIT_CONFIG_VALUE_0=%s", credentialHelper),
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func gitCommand(repoURL, gitUsername, gitToken string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
+	if env := gitAuthEnv(repoURL, gitUsername, gitToken); len(env) > 0 {
+		cmd.Env = append(filterEnv(os.Environ(), "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"), env...)
+	}
+	return cmd
+}
+
+func filterEnv(env []string, keys ...string) []string {
+	keySet := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		keySet[key] = struct{}{}
+	}
+
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			filtered = append(filtered, entry)
+			continue
+		}
+		if _, exists := keySet[key]; exists {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+
+	return filtered
 }
 
 // CloneOrUpdate clones the repository if it doesn't exist, or updates it if it does.
@@ -85,7 +178,7 @@ func (gm *GitManager) cloneRepository() error {
 		return fmt.Errorf("failed to create parent directory: %w", err)
 	}
 
-	cmd := exec.Command("git", "clone", "-b", gm.Branch, gm.RepoURL, gm.LocalPath)
+	cmd := gitCommand(gm.RepoURL, gm.GitUsername, gm.GitToken, "clone", "-b", gm.Branch, gm.RepoURL, gm.LocalPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, string(output))
@@ -168,7 +261,7 @@ func (gm *GitManager) updateRepository() error {
 		return fmt.Errorf("failed to ensure origin remote: %w", err)
 	}
 
-	cmd := exec.Command("git", "fetch", "origin")
+	cmd := gitCommand(gm.RepoURL, gm.GitUsername, gm.GitToken, "fetch", "origin")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to fetch from remote: %w\nOutput: %s", err, string(output))
@@ -196,7 +289,7 @@ func (gm *GitManager) updateRepository() error {
 		zlog.Warn().Err(err).Msg("Failed to handle local changes, attempting to continue")
 	}
 
-	cmd = exec.Command("git", "pull", "origin", gm.Branch)
+	cmd = gitCommand(gm.RepoURL, gm.GitUsername, gm.GitToken, "pull", "origin", gm.Branch)
 	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to pull changes: %w\nOutput: %s", err, string(output))
@@ -350,7 +443,7 @@ func (gm *GitManager) GetRemoteCommit() (string, error) {
 	}
 
 	// Fetch latest changes first
-	cmd := exec.Command("git", "fetch", "origin")
+	cmd := gitCommand(gm.RepoURL, gm.GitUsername, gm.GitToken, "fetch", "origin")
 	if _, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("failed to fetch from remote: %w", err)
 	}
@@ -369,8 +462,16 @@ func IsGitInstalled() bool {
 	return err == nil
 }
 
-func ValidateGitRepo(repoURL string) error {
-	cmd := exec.Command("git", "ls-remote", "--heads", repoURL)
+func ValidateGitRepo(repoURL, gitUsername, gitToken string) error {
+	cleanRepoURL, embeddedUsername, embeddedToken := normalizeRepoURL(repoURL)
+	if gitUsername == "" {
+		gitUsername = embeddedUsername
+	}
+	if gitToken == "" {
+		gitToken = embeddedToken
+	}
+
+	cmd := gitCommand(cleanRepoURL, gitUsername, gitToken, "ls-remote", "--heads", cleanRepoURL)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("invalid Git repository URL: %w\nOutput: %s", err, string(output))

@@ -85,6 +85,11 @@ WATCH_SCRIPT_DIR=watch_scripts
 
 # Git branch to track (default: "main")
 WATCH_SCRIPT_GIT_BRANCH=main
+
+# Optional credentials for private HTTPS repositories
+# Username defaults to "x-access-token" if unset
+WATCH_SCRIPT_GIT_USERNAME=
+WATCH_SCRIPT_GIT_TOKEN=
 ```
 
 ### Example Configuration
@@ -94,7 +99,13 @@ WATCH_SCRIPT_GIT_BRANCH=main
 WATCH_SCRIPT_GIT_REPO=https://github.com/blnk-finance/production-rules.git
 WATCH_SCRIPT_GIT_BRANCH=production
 WATCH_SCRIPT_DIR=/var/lib/blnk-watch/scripts
+WATCH_SCRIPT_GIT_USERNAME=x-access-token
+WATCH_SCRIPT_GIT_TOKEN=ghp_your_token_here
 ```
+
+For private repositories over HTTPS, the app rewrites the Git URL at command
+time and keeps the configured repo URL clean in logs and status responses.
+SSH works as long as the runtime has the right key loaded.
 
 ## How It Works
 

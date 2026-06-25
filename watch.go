@@ -157,12 +157,15 @@ func RunWatchService(ctx context.Context, port string, tunnel interface{}) error
 				gitBranch = "main"
 			}
 
+			gitUsername := os.Getenv("WATCH_SCRIPT_GIT_USERNAME")
+			gitToken := os.Getenv("WATCH_SCRIPT_GIT_TOKEN")
+
 			// Validate Git repository URL
-			if err := ValidateGitRepo(gitRepoURL); err != nil {
+			if err := ValidateGitRepo(gitRepoURL, gitUsername, gitToken); err != nil {
 				return fmt.Errorf("invalid Git repository URL: %w", err)
 			}
 
-			gitManager := NewGitManager(gitRepoURL, gitBranch, watchScriptDir)
+			gitManager := NewGitManager(gitRepoURL, gitBranch, watchScriptDir, gitUsername, gitToken)
 			globalGitManager = gitManager
 
 			if err := gitManager.CloneOrUpdate(); err != nil {
