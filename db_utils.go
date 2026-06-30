@@ -31,17 +31,25 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-const instructionDBDir = "blnk_watch_db"
-
 const instructionDBFilename = "instructions.duckdb"
-
-var instructionDB *sql.DB
-
-const dbDir = "blnk_watch_db"
 
 const dbFilename = "blnk.duckdb"
 
-const duckDBTempDir = dbDir + "/duckdb_temp"
+var instructionDB *sql.DB
+
+// watchDBDir is the absolute on-disk directory holding the watch DuckDB files.
+// It is resolved once at startup so DuckDB's data/WAL/temp paths never depend on
+// the process working directory — which git operations briefly change.
+var watchDBDir = resolveWatchDBDir()
+
+var duckDBTempDir = filepath.Join(watchDBDir, "duckdb_temp")
+
+func resolveWatchDBDir() string {
+	if abs, err := filepath.Abs("blnk_watch_db"); err == nil {
+		return abs
+	}
+	return "blnk_watch_db"
+}
 
 const (
 	duckDBAccessMode          = "READ_WRITE"
@@ -69,11 +77,11 @@ type Instruction struct {
 }
 
 func getInstructionDBPath() (string, error) {
-	if err := os.MkdirAll(instructionDBDir, 0755); err != nil {
-		log.Error().Err(err).Str("dir", instructionDBDir).Msg("Error creating instruction data directory")
+	if err := os.MkdirAll(watchDBDir, 0755); err != nil {
+		log.Error().Err(err).Str("dir", watchDBDir).Msg("Error creating instruction data directory")
 		return "", err
 	}
-	return filepath.Join(instructionDBDir, instructionDBFilename), nil
+	return filepath.Join(watchDBDir, instructionDBFilename), nil
 }
 
 func ensureInstructionSchema(db *sql.DB) error {
@@ -156,11 +164,11 @@ func createInstructionRecord(db *sql.DB, name, text, description string) (int64,
 }
 
 func getDBPath() (string, error) {
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		log.Error().Err(err).Str("dir", dbDir).Msg("Error creating data directory")
+	if err := os.MkdirAll(watchDBDir, 0755); err != nil {
+		log.Error().Err(err).Str("dir", watchDBDir).Msg("Error creating data directory")
 		return "", err
 	}
-	return filepath.Join(dbDir, dbFilename), nil
+	return filepath.Join(watchDBDir, dbFilename), nil
 }
 
 func ensureSchema(db *sql.DB) error {

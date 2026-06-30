@@ -115,11 +115,21 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-func gitCommand(repoURL, gitUsername, gitToken string, args ...string) *exec.Cmd {
+// gitCommand builds an authenticated git command that runs in dir (when non-empty)
+// via cmd.Dir, so the process-wide working directory is never changed.
+func gitCommand(dir, repoURL, gitUsername, gitToken string, args ...string) *exec.Cmd {
 	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
 	if env := gitAuthEnv(repoURL, gitUsername, gitToken); len(env) > 0 {
 		cmd.Env = append(filterEnv(os.Environ(), "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"), env...)
 	}
+	return cmd
+}
+
+// gitDirCommand builds an unauthenticated git command scoped to dir via cmd.Dir.
+func gitDirCommand(dir string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
 	return cmd
 }
 
@@ -178,7 +188,7 @@ func (gm *GitManager) cloneRepository() error {
 		return fmt.Errorf("failed to create parent directory: %w", err)
 	}
 
-	cmd := gitCommand(gm.RepoURL, gm.GitUsername, gm.GitToken, "clone", "-b", gm.Branch, gm.RepoURL, gm.LocalPath)
+	cmd := gitCommand("", gm.RepoURL, gm.GitUsername, gm.GitToken, "clone", "-b", gm.Branch, gm.RepoURL, gm.LocalPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, string(output))
@@ -197,18 +207,7 @@ func (gm *GitManager) isValidGitRepo() bool {
 		return false
 	}
 
-	// Change to repository directory
-	originalDir, err := os.Getwd()
-	if err != nil {
-		return false
-	}
-	defer os.Chdir(originalDir)
-
-	if err := os.Chdir(gm.LocalPath); err != nil {
-		return false
-	}
-
-	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd := gitDirCommand(gm.LocalPath, "remote", "get-url", "origin")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return false
@@ -219,12 +218,12 @@ func (gm *GitManager) isValidGitRepo() bool {
 }
 
 func (gm *GitManager) ensureOriginRemote() error {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd := gitDirCommand(gm.LocalPath, "remote", "get-url", "origin")
 	output, err := cmd.CombinedOutput()
 
 	if err != nil {
 		zlog.Info().Str("repo", gm.RepoURL).Msg("Adding origin remote")
-		cmd = exec.Command("git", "remote", "add", "origin", gm.RepoURL)
+		cmd = gitDirCommand(gm.LocalPath, "remote", "add", "origin", gm.RepoURL)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to add origin remote: %w\nOutput: %s", err, string(output))
 		}
@@ -237,7 +236,7 @@ func (gm *GitManager) ensureOriginRemote() error {
 			Str("old_url", currentURL).
 			Str("new_url", gm.RepoURL).
 			Msg("Updating origin remote URL")
-		cmd = exec.Command("git", "remote", "set-url", "origin", gm.RepoURL)
+		cmd = gitDirCommand(gm.LocalPath, "remote", "set-url", "origin", gm.RepoURL)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to update origin remote: %w\nOutput: %s", err, string(output))
 		}
@@ -247,34 +246,24 @@ func (gm *GitManager) ensureOriginRemote() error {
 }
 
 func (gm *GitManager) updateRepository() error {
-	originalDir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get current directory: %w", err)
-	}
-	defer os.Chdir(originalDir)
-
-	if err := os.Chdir(gm.LocalPath); err != nil {
-		return fmt.Errorf("failed to change to repository directory: %w", err)
-	}
-
 	if err := gm.ensureOriginRemote(); err != nil {
 		return fmt.Errorf("failed to ensure origin remote: %w", err)
 	}
 
-	cmd := gitCommand(gm.RepoURL, gm.GitUsername, gm.GitToken, "fetch", "origin")
+	cmd := gitCommand(gm.LocalPath, gm.RepoURL, gm.GitUsername, gm.GitToken, "fetch", "origin")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to fetch from remote: %w\nOutput: %s", err, string(output))
 	}
 
-	cmd = exec.Command("git", "rev-parse", "HEAD")
+	cmd = gitDirCommand(gm.LocalPath, "rev-parse", "HEAD")
 	localCommitOutput, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to get local commit hash: %w", err)
 	}
 	localCommit := strings.TrimSpace(string(localCommitOutput))
 
-	cmd = exec.Command("git", "rev-parse", fmt.Sprintf("origin/%s", gm.Branch))
+	cmd = gitDirCommand(gm.LocalPath, "rev-parse", fmt.Sprintf("origin/%s", gm.Branch))
 	remoteCommitOutput, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to get remote commit hash: %w", err)
@@ -289,7 +278,7 @@ func (gm *GitManager) updateRepository() error {
 		zlog.Warn().Err(err).Msg("Failed to handle local changes, attempting to continue")
 	}
 
-	cmd = gitCommand(gm.RepoURL, gm.GitUsername, gm.GitToken, "pull", "origin", gm.Branch)
+	cmd = gitCommand(gm.LocalPath, gm.RepoURL, gm.GitUsername, gm.GitToken, "pull", "origin", gm.Branch)
 	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to pull changes: %w\nOutput: %s", err, string(output))
@@ -306,7 +295,7 @@ func (gm *GitManager) updateRepository() error {
 // handleLocalChanges deals with local modifications before pulling
 func (gm *GitManager) handleLocalChanges() error {
 	// Check if there are any local changes
-	cmd := exec.Command("git", "status", "--porcelain")
+	cmd := gitDirCommand(gm.LocalPath, "status", "--porcelain")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to check git status: %w", err)
@@ -321,12 +310,12 @@ func (gm *GitManager) handleLocalChanges() error {
 	zlog.Info().Str("changes", changes).Msg("Detected local changes, resetting to match remote")
 
 	// Reset any uncommitted changes
-	cmd = exec.Command("git", "reset", "--hard", "HEAD")
+	cmd = gitDirCommand(gm.LocalPath, "reset", "--hard", "HEAD")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to reset local changes: %w\nOutput: %s", err, string(output))
 	}
 
-	cmd = exec.Command("git", "clean", "-fd")
+	cmd = gitDirCommand(gm.LocalPath, "clean", "-fd")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to clean untracked files: %w\nOutput: %s", err, string(output))
 	}
@@ -412,17 +401,7 @@ func (gm *GitManager) Stop() {
 }
 
 func (gm *GitManager) GetCurrentCommit() (string, error) {
-	originalDir, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("failed to get current directory: %w", err)
-	}
-	defer os.Chdir(originalDir)
-
-	if err := os.Chdir(gm.LocalPath); err != nil {
-		return "", fmt.Errorf("failed to change to repository directory: %w", err)
-	}
-
-	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd := gitDirCommand(gm.LocalPath, "rev-parse", "HEAD")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("failed to get commit hash: %w", err)
@@ -432,23 +411,13 @@ func (gm *GitManager) GetCurrentCommit() (string, error) {
 }
 
 func (gm *GitManager) GetRemoteCommit() (string, error) {
-	originalDir, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("failed to get current directory: %w", err)
-	}
-	defer os.Chdir(originalDir)
-
-	if err := os.Chdir(gm.LocalPath); err != nil {
-		return "", fmt.Errorf("failed to change to repository directory: %w", err)
-	}
-
 	// Fetch latest changes first
-	cmd := gitCommand(gm.RepoURL, gm.GitUsername, gm.GitToken, "fetch", "origin")
+	cmd := gitCommand(gm.LocalPath, gm.RepoURL, gm.GitUsername, gm.GitToken, "fetch", "origin")
 	if _, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("failed to fetch from remote: %w", err)
 	}
 
-	cmd = exec.Command("git", "rev-parse", fmt.Sprintf("origin/%s", gm.Branch))
+	cmd = gitDirCommand(gm.LocalPath, "rev-parse", fmt.Sprintf("origin/%s", gm.Branch))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("failed to get remote commit hash: %w", err)
@@ -471,7 +440,7 @@ func ValidateGitRepo(repoURL, gitUsername, gitToken string) error {
 		gitToken = embeddedToken
 	}
 
-	cmd := gitCommand(cleanRepoURL, gitUsername, gitToken, "ls-remote", "--heads", cleanRepoURL)
+	cmd := gitCommand("", cleanRepoURL, gitUsername, gitToken, "ls-remote", "--heads", cleanRepoURL)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("invalid Git repository URL: %w\nOutput: %s", err, string(output))
@@ -513,16 +482,7 @@ func (gm *GitManager) GetRepositoryInfo() map[string]interface{} {
 func (gm *GitManager) getGitStatus() map[string]interface{} {
 	status := map[string]interface{}{}
 
-	// Change to repository directory
-	originalDir, _ := os.Getwd()
-	defer os.Chdir(originalDir)
-
-	if err := os.Chdir(gm.LocalPath); err != nil {
-		status["error"] = "cannot access repository directory"
-		return status
-	}
-
-	if cmd := exec.Command("git", "status", "--porcelain"); cmd != nil {
+	if cmd := gitDirCommand(gm.LocalPath, "status", "--porcelain"); cmd != nil {
 		if output, err := cmd.CombinedOutput(); err == nil {
 			changes := strings.TrimSpace(string(output))
 			status["has_changes"] = changes != ""
@@ -531,13 +491,13 @@ func (gm *GitManager) getGitStatus() map[string]interface{} {
 	}
 
 	// Get remote info
-	if cmd := exec.Command("git", "remote", "-v"); cmd != nil {
+	if cmd := gitDirCommand(gm.LocalPath, "remote", "-v"); cmd != nil {
 		if output, err := cmd.CombinedOutput(); err == nil {
 			status["remotes"] = strings.TrimSpace(string(output))
 		}
 	}
 
-	if cmd := exec.Command("git", "branch", "-vv"); cmd != nil {
+	if cmd := gitDirCommand(gm.LocalPath, "branch", "-vv"); cmd != nil {
 		if output, err := cmd.CombinedOutput(); err == nil {
 			status["branches"] = strings.TrimSpace(string(output))
 		}
