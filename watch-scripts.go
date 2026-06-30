@@ -60,7 +60,8 @@ func getInstructionByIDInternal(db *sql.DB, id int64) (Instruction, error) {
 	`, id)
 
 	var i Instruction
-	err := row.Scan(&i.ID, &i.Name, &i.Text, &i.Description, &i.DSLJSON, &i.CreatedAt, &i.UpdatedAt)
+	var desc sql.NullString
+	err := row.Scan(&i.ID, &i.Name, &i.Text, &desc, &i.DSLJSON, &i.CreatedAt, &i.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			log.Warn().Int64("id", id).Msg("Instruction not found by ID")
@@ -68,6 +69,9 @@ func getInstructionByIDInternal(db *sql.DB, id int64) (Instruction, error) {
 		}
 		log.Error().Err(err).Int64("id", id).Msg("Error scanning instruction row")
 		return Instruction{}, err
+	}
+	if desc.Valid {
+		i.Description = desc.String
 	}
 
 	return i, nil
@@ -85,7 +89,8 @@ func GetInstructionByName(name string) (Instruction, error) {
 	`, name)
 
 	var i Instruction
-	err := row.Scan(&i.ID, &i.Name, &i.Text, &i.Description, &i.DSLJSON, &i.CreatedAt, &i.UpdatedAt)
+	var desc sql.NullString
+	err := row.Scan(&i.ID, &i.Name, &i.Text, &desc, &i.DSLJSON, &i.CreatedAt, &i.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			log.Warn().Str("name", name).Msg("Instruction not found by name")
@@ -93,6 +98,9 @@ func GetInstructionByName(name string) (Instruction, error) {
 		}
 		log.Error().Err(err).Str("name", name).Msg("Error scanning instruction row by name")
 		return Instruction{}, err
+	}
+	if desc.Valid {
+		i.Description = desc.String
 	}
 
 	return i, nil
