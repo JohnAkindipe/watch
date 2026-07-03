@@ -1529,9 +1529,9 @@ func functionCallToPreviousTransactionCondition(funcCall *FunctionCall) (interfa
 	}
 
 	return map[string]interface{}{
-		"type":         "previous_transaction",
-		"time_window":  timeWindow,
-		"match":        match,
+		"type":        "previous_transaction",
+		"time_window": timeWindow,
+		"match":       match,
 	}, nil
 }
 

@@ -26,7 +26,7 @@ type mockGlobalTunnel struct {
 }
 
 func (m *mockGlobalTunnel) IsConnected() bool {
-		return true
+	return true
 }
 
 func (m *mockGlobalTunnel) SendAnomaly(anomaly AnomalyMessage) error {
@@ -46,45 +46,45 @@ func (m *mockGlobalTunnelLacksSendAnomaly) IsConnected() bool {
 
 func TestSendAnomalyToTunnel(t *testing.T) {
 	originalGlobalTunnel := globalTunnel
-	defer func() { 
-		globalTunnel = originalGlobalTunnel 
+	defer func() {
+		globalTunnel = originalGlobalTunnel
 	}()
 	anomaly := AnomalyMessage{}
-	tests := []struct{
-		name string
-		condition string
+	tests := []struct {
+		name         string
+		condition    string
 		globalTunnel interface{}
-		hasError bool 
-	} {
+		hasError     bool
+	}{
 		{
-			name: "nil globalTunnel",
-			condition: "when globalTunnel is nil",
+			name:         "nil globalTunnel",
+			condition:    "when globalTunnel is nil",
 			globalTunnel: nil,
-			hasError: true,
+			hasError:     true,
 		},
 		{
-			name: "lacks isConnected",
-			condition: "when globalTunnel lacks IsConnected method",
+			name:         "lacks isConnected",
+			condition:    "when globalTunnel lacks IsConnected method",
 			globalTunnel: "Invalid Tunnel",
-			hasError: true,
+			hasError:     true,
 		},
 		{
-			name: "lacks sendAnomaly",
-			condition: "when globalTunnel lacks SendAnomaly method",
+			name:         "lacks sendAnomaly",
+			condition:    "when globalTunnel lacks SendAnomaly method",
 			globalTunnel: &mockGlobalTunnelLacksSendAnomaly{},
-			hasError: true,
+			hasError:     true,
 		},
 		{
-			name: "sendAnomaly error",
-			condition: "when SendAnomaly returns error",
+			name:         "sendAnomaly error",
+			condition:    "when SendAnomaly returns error",
 			globalTunnel: &mockGlobalTunnel{hasSendAnomalyErr: true},
-			hasError: true,
+			hasError:     true,
 		},
 		{
-			name: "valid globalTunnel",
-			condition: "when globalTunnel is totally valid",
+			name:         "valid globalTunnel",
+			condition:    "when globalTunnel is totally valid",
 			globalTunnel: &mockGlobalTunnel{},
-			hasError: false,
+			hasError:     false,
 		},
 	}
 
