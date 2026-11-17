@@ -24,14 +24,19 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// activeRulesSet holds a set of active rules. The valid field is an atomic boolean to
-// prevent race conditions from update of the set validity from concurrent goroutines.
+// activeRulesSet holds active rules and their aggregate conditions. Its atomic counters
+// track validity, and its mutex syncs concurrent access to the rules and aggregate conditions.
 type activeRulesSet struct {
-	rules []Rule
-	aggrConds []AggregateCond // aggregate conditions derived from the current set of active rules
+	rules            []Rule
+	aggrConds        []AggregateCond // aggregate conditions derived from the current set of active rules
 	invalidatedCount atomic.Uint64
-	level atomic.Uint64
-	lock sync.Mutex
+	level            atomic.Uint64
+	lock             sync.RWMutex
+}
+
+type activeRulesSnapshot struct {
+	rules     []Rule
+	aggrConds []AggregateCond
 }
 
 // [newActiveRulesSet] creates a new instance of activeRulesSet. The returned set is 
@@ -41,7 +46,7 @@ type activeRulesSet struct {
 func newActiveRulesSet() *activeRulesSet {
 
 	rc := &activeRulesSet{
-		rules: make([]Rule, 0),
+		rules:     make([]Rule, 0),
 		aggrConds: make([]AggregateCond, 0),
 	}
 	rc.invalidatedCount.Add(1)
@@ -62,9 +67,15 @@ func (rc *activeRulesSet) populate() error {
 	if rc.isValid() {
 		return nil
 	}
-	
+
+	// recheck that the rules set is valid after acquiring the lock.
+	// this is because another goroutine may have populated the rules set
+	// while this goroutine was waiting to acquire the lock.
 	rc.lock.Lock()
 	defer rc.lock.Unlock()
+	if rc.isValid() {
+		return nil
+	}
 
 	log.Info().Msg("Populating rules set")
 
@@ -87,6 +98,16 @@ func (rc *activeRulesSet) populate() error {
 
 func (rc *activeRulesSet) isValid() bool {
 	return rc.level.Load() == rc.invalidatedCount.Load()
+}
+
+func (rc *activeRulesSet) snapshot() activeRulesSnapshot {
+	rc.lock.RLock()
+	defer rc.lock.RUnlock()
+
+	return activeRulesSnapshot{
+		rules:     rc.rules,
+		aggrConds: rc.aggrConds,
+	}
 }
 
 func (rc *activeRulesSet) invalidate() {

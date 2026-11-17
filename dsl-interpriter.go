@@ -143,7 +143,11 @@ func buildAggregateConds(rules []Rule) []AggregateCond {
 	return aggrConds
 }
 
-func BuildAggContext(ctx context.Context, db *sql.DB, txn map[string]any, aggrConds []AggregateCond) (map[string]float64, error) {
+func BuildAggContext(ctx context.Context, db *sql.DB, txn map[string]any, rules []Rule) (map[string]float64, error) {
+	return buildAggContext(ctx, db, txn, buildAggregateConds(rules))
+}
+
+func buildAggContext(ctx context.Context, db *sql.DB, txn map[string]any, aggrConds []AggregateCond) (map[string]float64, error) {
 	aggContext := make(map[string]float64)
 	specs := make(map[string]AggregateCond)
 

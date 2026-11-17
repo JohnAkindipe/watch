@@ -366,8 +366,7 @@ func TestActiveRulesSet_DeleteRuleInvalidates(t *testing.T) {
 }
 
 // testPopulateActiveRulesSet tests that [activeRulesSet.populate] correctly populates the globalActiveRulesSet
-// after any invalidation. globalActiveRulesSet should be invalid when [testPopulateActiveRulesSet] is called.
-// It populates the globalActiveRulesSet and builds the expected rules set state
+// after any invalidation. It populates the globalActiveRulesSet and builds the expected rules set state
 // manually, via [getActiveRules] and [buildAggregateConds]. It then calls [testExpectedRulesSet] to verify
 // the rules set state.
 func testPopulateActiveRulesSet(t *testing.T) {
@@ -513,6 +512,110 @@ func TestActiveRulesSet_ConcurrentModification(t *testing.T) {
 	}
 
 	testPopulateActiveRulesSet(t)
+}
+
+// TestActiveRulesSet_ConcurrentRulesModificationAndTxnEvaluation tests the concurrent modification of rules
+// in the DB while another goroutine concurrently evaluates txns. It asserts the precise expected invalidated count
+// of the active rules set and tests against potential race conditions between concurrent modification of rules
+// and concurrent evaluation of txns.
+func TestActiveRulesSet_ConcurrentRulesModificationAndTxnEvaluation(t *testing.T) {
+	t.Cleanup(func() {
+		clearInstructions(t)
+		clearTransactions(t)
+		globalActiveRulesSet.clear()
+	})
+
+	ruleName1, description1, ruleJSON1, err := CompileWatchScript(testScriptWithAggrConds_1)
+	if err != nil {
+		t.Fatalf("CompileWatchScript (initial): %v", err)
+	}
+	ruleName2, description2, ruleJSON2, err := CompileWatchScript(testScriptWithAggrConds_2)
+	if err != nil {
+		t.Fatalf("CompileWatchScript (updated): %v", err)
+	}
+
+	instruction, err := CreateInstructionWithPrecompiledDSL(
+		context.Background(), ruleName1, testScriptWithAggrConds_1, description1, ruleJSON1,
+	)
+	if err != nil {
+		t.Fatalf("CreateInstructionWithPrecompiledDSL: %v", err)
+	}
+
+	if err := globalActiveRulesSet.populate(); err != nil {
+		t.Fatalf("populate initial rules: %v", err)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+
+	// This goroutine updates the same rule multiple times, invalidating the globalActiveRulesSet
+	// concurrently as another goroutine evaluates transactions. This tests that the globalActiveRulesSet
+	// is free of race conditions.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 20; i++ {
+			name, script, description, ruleJSON := ruleName1, testScriptWithAggrConds_1, description1, ruleJSON1
+			if i%2 == 1 {
+				name, script, description, ruleJSON = ruleName2, testScriptWithAggrConds_2, description2, ruleJSON2
+			}
+			if _, err := UpdateInstructionWithPrecompiledDSL(context.Background(), instruction.ID, name, script, description, ruleJSON); err != nil {
+				errs <- fmt.Errorf("update rule: %w", err)
+				return
+			}
+		}
+	}()
+
+	// This goroutine evaluates transactions concurrently while the other goroutine is concurrently
+	// updating the rules in the database.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 40; i++ {
+			txn := Transaction{
+				TransactionID: fmt.Sprintf("concurrent-%d", i),
+				Amount:        100,
+				Source:        "concurrent-source",
+				Currency:      "USD",
+				CreatedAt:     time.Now().UTC(),
+				MetaData:      make(map[string]interface{}),
+			}
+			if _, err := evaluateTransaction(txn); err != nil {
+				errs <- fmt.Errorf("evaluate transaction: %w", err)
+				return
+			}
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	// there is no defined order to how the two goroutines above may run. it is possible that the evaluating
+	// goroutine completes evaluating txns before the rules-updating goroutine completes, so that by the time the 
+	// rules-updating goroutine is done the globalActiveRulesSet, may not necessarily contain the latest active 
+	// rules, hence why [testPopulateActiveRulesSet] is necessary to catch up the globalActiveRulesSet with the 
+	// rules set in the DB.
+	testPopulateActiveRulesSet(t)
+
+	// the rulesSet starts with an invalidated count of 1; the initial compiled rule and 20 updates
+	// each invalidate the cache once. The final populate catches level up to it. We're not merely
+	// testing validity here, this intentionally tests the exact count of invalidation that occurs
+	// by the rules-updating goroutine. This solidifies the expectation that rules-set invalidation occurs
+	// as precisely as expected without any data races.
+	const wantInvalidatedCount = uint64(22)
+	if got := globalActiveRulesSet.invalidatedCount.Load(); got != wantInvalidatedCount {
+		t.Errorf("invalidated count = %d, want %d", got, wantInvalidatedCount)
+	}
+	if got := globalActiveRulesSet.level.Load(); got != wantInvalidatedCount {
+		t.Errorf("cache level = %d, want %d", got, wantInvalidatedCount)
+	}
 }
 
 // TestActiveRulesSet_PopulateReturnsErrorOnDatabaseFailure verifies that populate()

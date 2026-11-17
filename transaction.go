@@ -127,6 +127,7 @@ func evaluateTransaction(t Transaction) (Transaction, error) {
 	if err = globalActiveRulesSet.populate(); err != nil {
 		return t, fmt.Errorf("failed to populate rules cache: %w", err)
 	}
+	snapshot := globalActiveRulesSet.snapshot()
 
 	transactionMap := map[string]any{
 		"transaction_id": t.TransactionID,
@@ -139,11 +140,11 @@ func evaluateTransaction(t Transaction) (Transaction, error) {
 		"created_at":     t.CreatedAt,
 	}
 
-	aggCtx, err := BuildAggContext(context.Background(), db, transactionMap, globalActiveRulesSet.aggrConds)
+	aggCtx, err := buildAggContext(context.Background(), db, transactionMap, snapshot.aggrConds)
 	if err != nil {
 		return t, fmt.Errorf("failed to build aggregate context: %w", err)
 	}
-	verdicts, err := EvaluateRules(transactionMap, globalActiveRulesSet.rules, aggCtx)
+	verdicts, err := EvaluateRules(transactionMap, snapshot.rules, aggCtx)
 	if err != nil {
 		return t, fmt.Errorf("failed to evaluate rules: %w", err)
 	}
